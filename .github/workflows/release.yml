@@ -1,0 +1,32 @@
+name: Release SDK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Commit dist/ to release tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f dist/
+          git commit -m "chore: build dist for ${{ github.ref_name }}"
+          git tag -fa "${{ github.ref_name }}" -m "Release ${{ github.ref_name }}"
+          git push origin -f "refs/tags/${{ github.ref_name }}"
