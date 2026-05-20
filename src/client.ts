@@ -8,27 +8,47 @@ import type {
 } from './types';
 
 const AUTH_REJECTED_CLOSE_CODE = 4401;
+const PONG_TIMEOUT_CLOSE_CODE = 4408;
+const SUBPROTOCOL_MISMATCH_CLOSE_CODE = 4400;
+
+const DEFAULT_PING_INTERVAL_MS = 30_000;
+const DEFAULT_PONG_TIMEOUT_MS = 10_000;
 
 export class AppoWssClient {
   private readonly config: AppoWssClientConfig;
   private readonly rws: ReconnectingWebSocket;
+  private readonly protocolVersion: string;
+  private readonly pingIntervalMs: number;
+  private readonly pongTimeoutMs: number;
+
   private status: WssConnectionStatus = 'idle';
   private authenticated = false;
   private closedByCaller = false;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: AppoWssClientConfig) {
     this.config = config;
+    this.protocolVersion = config.protocolVersion ?? 'appo-v1';
+    this.pingIntervalMs =
+      config.keepalive?.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
+    this.pongTimeoutMs =
+      config.keepalive?.pongTimeoutMs ?? DEFAULT_PONG_TIMEOUT_MS;
 
-    const protocolVersion = config.protocolVersion ?? 'appo-v1';
-    const protocols = [protocolVersion, `gk.${config.gateToken}`];
-
+    const protocols = [this.protocolVersion, `gk.${config.gateToken}`];
     const r = config.reconnect ?? {};
-    this.rws = new ReconnectingWebSocket(config.url, protocols, {
+
+    const rwsOptions: Record<string, unknown> = {
       minReconnectionDelay: r.minDelayMs ?? 1000,
       maxReconnectionDelay: r.maxDelayMs ?? 30_000,
       reconnectionDelayGrowFactor: r.growFactor ?? 1.5,
       maxRetries: r.maxRetries ?? Infinity,
-    });
+    };
+    if (config.webSocketCtor) {
+      rwsOptions.WebSocket = config.webSocketCtor;
+    }
+
+    this.rws = new ReconnectingWebSocket(config.url, protocols, rwsOptions);
 
     this.rws.addEventListener('open', () => {
       void this.onOpen();
@@ -51,6 +71,7 @@ export class AppoWssClient {
   close(): void {
     this.closedByCaller = true;
     this.authenticated = false;
+    this.stopKeepalive();
     this.rws.close();
     this.setStatus('disconnected');
   }
@@ -71,6 +92,17 @@ export class AppoWssClient {
 
   private async onOpen(): Promise<void> {
     this.authenticated = false;
+    this.stopKeepalive();
+
+    if (this.rws.protocol !== this.protocolVersion) {
+      this.fail(
+        'subprotocol_mismatch',
+        SUBPROTOCOL_MISMATCH_CLOSE_CODE,
+        `expected ${this.protocolVersion}, got ${this.rws.protocol || '(none)'}`,
+      );
+      return;
+    }
+
     this.setStatus('authenticating');
     try {
       const token = await this.config.getToken();
@@ -82,10 +114,7 @@ export class AppoWssClient {
       this.rws.send(JSON.stringify(authMsg));
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'getToken_failed';
-      this.config.onAuthError?.(reason);
-      this.setStatus('auth_failed');
-      this.closedByCaller = true;
-      this.rws.close();
+      this.fail('getToken_failed', AUTH_REJECTED_CLOSE_CODE, reason);
     }
   }
 
@@ -104,15 +133,19 @@ export class AppoWssClient {
     if (msg.type === 'auth_success') {
       this.authenticated = true;
       this.setStatus('connected');
+      this.startKeepalive();
       return;
     }
 
     if (msg.type === 'auth_error') {
-      this.authenticated = false;
-      this.setStatus('auth_failed');
       const reason =
         typeof msg.reason === 'string' ? msg.reason : 'auth_error';
-      this.config.onAuthError?.(reason);
+      this.fail(reason, AUTH_REJECTED_CLOSE_CODE);
+      return;
+    }
+
+    if (msg.type === 'pong') {
+      this.clearPongTimer();
       return;
     }
 
@@ -123,6 +156,7 @@ export class AppoWssClient {
 
   private onClose(event: RwsCloseEvent): void {
     this.authenticated = false;
+    this.stopKeepalive();
 
     if (event.code === AUTH_REJECTED_CLOSE_CODE) {
       this.setStatus('auth_failed');
@@ -138,5 +172,48 @@ export class AppoWssClient {
     }
 
     this.setStatus('reconnecting');
+  }
+
+  private startKeepalive(): void {
+    if (this.pingIntervalMs <= 0) return;
+    this.stopKeepalive();
+    this.pingTimer = setInterval(() => this.sendPing(), this.pingIntervalMs);
+  }
+
+  private stopKeepalive(): void {
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    this.clearPongTimer();
+  }
+
+  private clearPongTimer(): void {
+    if (this.pongTimer !== null) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+  }
+
+  private sendPing(): void {
+    if (!this.authenticated) return;
+    this.rws.send(JSON.stringify({ type: 'ping' }));
+    this.clearPongTimer();
+    this.pongTimer = setTimeout(() => {
+      // Server didn't pong in time — treat connection as dead. Don't fail-permanent;
+      // close the socket so ReconnectingWebSocket reconnects.
+      this.config.onAuthError?.('pong_timeout');
+      this.rws.reconnect();
+    }, this.pongTimeoutMs);
+  }
+
+  /** Permanent failure: notify caller, stop reconnect, close socket. */
+  private fail(reason: string, _closeCode: number, detail?: string): void {
+    this.authenticated = false;
+    this.stopKeepalive();
+    this.setStatus('auth_failed');
+    this.config.onAuthError?.(detail ? `${reason}: ${detail}` : reason);
+    this.closedByCaller = true;
+    this.rws.close();
   }
 }

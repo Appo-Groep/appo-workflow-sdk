@@ -97,9 +97,11 @@ const client = new AppoWssClient({
 | `getToken` | `() => Promise<string>` | yes | Returns a Google OAuth2 access token. Called fresh on every connect and reconnect. |
 | `onMessage` | `(msg) => void` | no | Called for every message received after `auth_success`. |
 | `onStatusChange` | `(status) => void` | no | Called on transitions between `idle \| connecting \| authenticating \| connected \| reconnecting \| disconnected \| auth_failed`. |
-| `onAuthError` | `(reason: string) => void` | no | Called when auth fails. Reason comes from the server's `auth_error` message or from `getToken()` throwing. |
-| `protocolVersion` | `string` | no | Defaults to `appo-v1`. Sent first in `Sec-WebSocket-Protocol`. |
+| `onAuthError` | `(reason: string) => void` | no | Called when auth fails. Reasons: `rejected_by_server`, `auth_error`, `getToken_failed`, `subprotocol_mismatch`, `pong_timeout`, or any string the server provides in `auth_error.reason`. |
+| `protocolVersion` | `string` | no | Defaults to `appo-v1`. Sent first in `Sec-WebSocket-Protocol`. Server is expected to echo this back; if not, the SDK closes the connection with `subprotocol_mismatch`. |
 | `reconnect` | object | no | Tuning: `{ minDelayMs, maxDelayMs, growFactor, maxRetries }`. |
+| `keepalive` | object | no | `{ pingIntervalMs?: number (default 30000), pongTimeoutMs?: number (default 10000) }`. Set `pingIntervalMs: 0` to disable. |
+| `webSocketCtor` | `new (url, protocols?) => WebSocket` | no | Custom WebSocket constructor. Defaults to the global `WebSocket`. Tests pass a mock; servers can pass `ws`'s class for Node. |
 
 ### Methods
 
@@ -126,22 +128,33 @@ new AppoWssClient(...)
         ├─[gate token wrong]→ server destroys socket silently
         │                     ReconnectingWebSocket retries with backoff
         │
-        └─[gate ok]→ status: authenticating
+        └─[gate ok]→ SDK checks server echoed `appo-v1` subprotocol
                        │
-                       └─→ client calls getToken()
-                       └─→ client sends { type: 'auth', token, shared_id, client_type }
-                              │
-                              ├─[token bad]→ server sends auth_error / close(4401)
-                              │              status: auth_failed
-                              │              onAuthError(reason) — no reconnect
-                              │
-                              └─[token ok]→ server sends auth_success
-                                            status: connected
-                                            onMessage starts firing
+                       ├─[no/wrong echo]→ status: auth_failed
+                       │                   onAuthError('subprotocol_mismatch: ...')
+                       │                   no reconnect
+                       │
+                       └─[echo ok]→ status: authenticating
+                                      │
+                                      └─→ client calls getToken()
+                                      └─→ client sends { type: 'auth', token, shared_id, client_type }
+                                             │
+                                             ├─[token bad]→ server sends auth_error / close(4401)
+                                             │              status: auth_failed
+                                             │              onAuthError(reason) — no reconnect
+                                             │
+                                             └─[token ok]→ server sends auth_success
+                                                           status: connected
+                                                           ping interval starts
+                                                           onMessage starts firing
 
 (every ~1h Cloud Run drops the connection → ReconnectingWebSocket reconnects
- → getToken() is called again → fresh auth handshake → status: connected)
+ → subprotocol re-verified → getToken() called again → fresh auth handshake → connected)
 ```
+
+### Keepalive
+
+After `auth_success`, the SDK sends `{type:"ping"}` every `pingIntervalMs` (default 30s). The server is expected to reply with `{type:"pong"}` within `pongTimeoutMs` (default 10s). If a pong does not arrive in time, the SDK reports `pong_timeout` via `onAuthError` and forces a reconnect.
 
 ---
 
@@ -160,11 +173,26 @@ git push origin v0.2.0
 
 ---
 
+## Message protocol
+
+All schemas live in `src/schemas/`. `validateMessage(msg)` checks `msg.type` against the registry.
+
+**Client → server** (the SDK sends these): `auth`, `context_update`, `context_get`, `state_set`, `state_get`, `forward`, `action`, `inject_html`, `broadcast_user`, `broadcast_global`, `ping`.
+
+**Server → client** (the SDK receives these): `auth_success`, `auth_error`, `context_data`, `state_data`, `inject_html`, `action`, `presence_update`, `error`, `pong`, `token_expired`.
+
+`broadcast_global` requires the authenticated user to have `role: it_admin` — enforced server-side, not by the SDK.
+
+`inject_html` payloads are strictly schema-validated: only the SafeElement whitelist (`button | div | span | li | label | a`), `appo-*`-prefixed classes/data attributes, fixed event set (`click | change | input`). The extension's executor performs the same validation again before touching the DOM (two independent layers — see DESIGN.md §8.4).
+
+---
+
 ## Local development
 
 ```bash
 npm install
-npm run build       # outputs dist/index.{js,cjs,global.js} + .d.ts
+npm run build       # outputs dist/index.{js,mjs,global.js} + .d.ts
 npm run dev         # watch mode
 npm run typecheck
+npm test            # vitest
 ```
