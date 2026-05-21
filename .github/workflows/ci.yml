@@ -17,7 +17,11 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - run: npm ci
+      # Use npm install (not npm ci) for parity with downstream consumer repos
+      # that depend on this via github: protocol — their CI hits ours through
+      # cross-org workflows, and ci's strict integrity hash check is brittle
+      # against GitHub's tag-tarball regeneration.
+      - run: npm install --no-audit --no-fund
 
       - run: npm run typecheck
 
