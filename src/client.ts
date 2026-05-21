@@ -110,6 +110,7 @@ export class AppoWssClient {
         token,
         sharedId: this.config.sharedId,
         clientType: this.config.clientType,
+        clientVersion: this.config.clientVersion,
       });
       this.rws.send(JSON.stringify(authMsg));
     } catch (err) {

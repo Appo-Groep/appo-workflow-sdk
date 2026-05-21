@@ -7,5 +7,6 @@ export const authSchema = {
     token: { type: 'string', minLength: 1 },
     shared_id: { type: 'string', format: 'uuid' },
     client_type: { enum: ['extension', 'retool'] },
+    client_version: { type: 'string', maxLength: 50 },
   },
 } as const;
