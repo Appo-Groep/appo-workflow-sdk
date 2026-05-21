@@ -99,6 +99,21 @@ describe('AppoWssClient — handshake', () => {
     });
   });
 
+  it('includes client_version in the auth message when config provides it', async () => {
+    buildClient({ clientVersion: '2.3.1' });
+    const sock = await waitForSocket();
+    sock.simulateOpen('appo-v1');
+    await flushAuthSend();
+
+    expect(sock.lastSent()).toEqual({
+      type: 'auth',
+      token: 'test-token',
+      shared_id: SHARED_ID,
+      client_type: 'extension',
+      client_version: '2.3.1',
+    });
+  });
+
   it('fails with getToken_failed when getToken throws', async () => {
     const { authErrors, statuses } = buildClient({
       getToken: async () => {

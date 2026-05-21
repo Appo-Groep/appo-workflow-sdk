@@ -74,4 +74,12 @@ export interface AppoWssClientConfig {
    * environments (e.g. Node) by passing `ws`'s WebSocket class.
    */
   webSocketCtor?: WebSocketCtor;
+
+  /**
+   * Optional caller-supplied build version string included in the auth message
+   * as `client_version`. The server records it so a compatibility checker
+   * (e.g. the Retool app) can detect outdated clients and prompt the user
+   * to update. Free-form string; typically `package.json#version`.
+   */
+  clientVersion?: string;
 }
