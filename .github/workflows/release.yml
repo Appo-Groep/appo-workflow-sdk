@@ -1,32 +1,87 @@
 name: Release SDK
 
+# Release flow:
+#   1. Bump the `version` in package.json on a feature branch / development.
+#   2. Merge to main (or push directly to main).
+#   3. This workflow reads the version, and IF the corresponding `v<version>`
+#      tag does not yet exist, it:
+#        - runs typecheck + tests + build
+#        - force-adds dist/ on top of main's HEAD
+#        - tags that build commit as v<version>
+#        - pushes only the tag (main stays clean — dist lives at the tag only)
+#        - creates a GitHub Release with auto-generated notes
+#
+# The same version cannot be re-released. To ship, bump the version again.
+
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-
-      - name: Commit dist/ to release tag
+      - name: Read version from package.json
+        id: pkg
         run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Skip if tag already exists
+        id: tag_check
+        run: |
+          if git fetch --tags && git rev-parse "${{ steps.pkg.outputs.version }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.pkg.outputs.version }} already exists — nothing to release."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.tag_check.outputs.exists == 'false'
+        run: npm ci
+
+      - name: Typecheck
+        if: steps.tag_check.outputs.exists == 'false'
+        run: npm run typecheck
+
+      - name: Test
+        if: steps.tag_check.outputs.exists == 'false'
+        run: npm test
+
+      - name: Build dist
+        if: steps.tag_check.outputs.exists == 'false'
+        run: npm run build
+
+      - name: Tag the build commit (dist included)
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          VERSION="${{ steps.pkg.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -f dist/
-          git commit -m "chore: build dist for ${{ github.ref_name }}"
-          git tag -fa "${{ github.ref_name }}" -m "Release ${{ github.ref_name }}"
-          git push origin -f "refs/tags/${{ github.ref_name }}"
+          git commit -m "chore: build dist for $VERSION"
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+
+      - name: Create GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.pkg.outputs.version }}" \
+            --title "${{ steps.pkg.outputs.version }}" \
+            --generate-notes

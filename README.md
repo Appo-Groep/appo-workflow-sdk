@@ -160,16 +160,27 @@ After `auth_success`, the SDK sends `{type:"ping"}` every `pingIntervalMs` (defa
 
 ## Release process
 
-The SDK is consumed via jsDelivr from this GitHub repo's tag refs. `dist/` is built and committed to the tagged commit by CI.
+Releases are driven by merges to `main`. To ship a version:
 
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-# release.yml builds dist/, force-commits it to the tag, pushes
-# Retool can immediately load https://cdn.jsdelivr.net/gh/Appo-Groep/appo-workflow-sdk@v0.2.0/dist/index.global.js
+1. Bump `version` in `package.json` on `development` (or a feature branch).
+2. Merge to `main` (or push directly to `main`).
+3. The `Release SDK` workflow detects the new version, runs typecheck + tests + build, tags the build commit, and creates a GitHub Release.
+
+The workflow is **idempotent**: if `v<version>` already exists as a tag, it skips. To re-ship, bump the version.
+
+The dist commit lives only at the tag — `main` stays clean. Each tag = `<main commit> + 1 build commit` containing `dist/`.
+
+```
+After v0.1.0 is shipped, Retool loads:
+  https://cdn.jsdelivr.net/gh/Appo-Groep/appo-workflow-sdk@v0.1.0/dist/index.global.js
 ```
 
-`dist/` is gitignored on regular commits — only the release workflow force-adds it.
+`dist/` is gitignored on regular commits — only the release workflow force-adds it onto the tagged commit.
+
+### Requirements
+
+- The repo must be **public** for jsDelivr to serve from it. The SDK contains no secrets or hardcoded URLs (everything sensitive is passed in by the caller), so public is safe by design (DESIGN.md §8.5).
+- The default `GITHUB_TOKEN` has enough permission to push tags and create releases — no extra secrets needed.
 
 ---
 
