@@ -310,3 +310,90 @@ describe('AppoWssClient — send / close', () => {
     expect(client.isAuthenticated()).toBe(false);
   });
 });
+
+describe('AppoWssClient — ticket auth (retool)', () => {
+  beforeEach(() => {
+    MockWebSocket.reset();
+  });
+
+  it('refuses to construct without getToken or getTicket', () => {
+    expect(() =>
+      new AppoWssClient({
+        url: 'ws://test/connect',
+        gateToken: 'GATE',
+        sharedId: SHARED_ID,
+        clientType: 'retool',
+        webSocketCtor:
+          MockWebSocket as unknown as AppoWssClientConfig['webSocketCtor'],
+      } as AppoWssClientConfig),
+    ).toThrow(/getToken or getTicket/);
+  });
+
+  it('refuses to construct with both getToken and getTicket', () => {
+    expect(
+      () =>
+        new AppoWssClient({
+          url: 'ws://test/connect',
+          gateToken: 'GATE',
+          sharedId: SHARED_ID,
+          clientType: 'retool',
+          getToken: async () => 'tok',
+          getTicket: async () => 'tic',
+          webSocketCtor:
+            MockWebSocket as unknown as AppoWssClientConfig['webSocketCtor'],
+        }),
+    ).toThrow(/cannot provide both/);
+  });
+
+  it('sends a ticket auth message with retool_user_id when configured', async () => {
+    const getTicket = vi.fn(async () => 'TICKET-JWT');
+    new AppoWssClient({
+      url: 'ws://test/connect',
+      gateToken: 'GATE',
+      sharedId: SHARED_ID,
+      clientType: 'retool',
+      getTicket,
+      retoolUserId: '42',
+      clientVersion: '0.2.0',
+      webSocketCtor:
+        MockWebSocket as unknown as AppoWssClientConfig['webSocketCtor'],
+    });
+    const sock = await waitForSocket();
+    sock.simulateOpen('appo-v1');
+    await flushAuthSend();
+
+    expect(getTicket).toHaveBeenCalledTimes(1);
+    expect(sock.lastSent()).toEqual({
+      type: 'auth',
+      ticket: 'TICKET-JWT',
+      shared_id: SHARED_ID,
+      client_type: 'retool',
+      retool_user_id: '42',
+      client_version: '0.2.0',
+    });
+  });
+
+  it('reports getTicket_failed when getTicket throws', async () => {
+    const authErrors: string[] = [];
+    const statuses: WssConnectionStatus[] = [];
+    new AppoWssClient({
+      url: 'ws://test/connect',
+      gateToken: 'GATE',
+      sharedId: SHARED_ID,
+      clientType: 'retool',
+      getTicket: async () => {
+        throw new Error('boom');
+      },
+      onAuthError: (r) => authErrors.push(r),
+      onStatusChange: (s) => statuses.push(s),
+      webSocketCtor:
+        MockWebSocket as unknown as AppoWssClientConfig['webSocketCtor'],
+    });
+    const sock = await waitForSocket();
+    sock.simulateOpen('appo-v1');
+    await flushAuthSend();
+
+    expect(authErrors[0]).toMatch(/^getTicket_failed:/);
+    expect(statuses).toContain('auth_failed');
+  });
+});
