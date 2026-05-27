@@ -1,6 +1,6 @@
 import ReconnectingWebSocket from 'reconnecting-websocket';
 import type { CloseEvent as RwsCloseEvent } from 'reconnecting-websocket/dist/events';
-import { buildAuthMessage } from './auth';
+import { buildAuthMessage, buildTicketAuthMessage } from './auth';
 import type {
   AppoWssClientConfig,
   WssConnectionStatus,
@@ -28,6 +28,16 @@ export class AppoWssClient {
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: AppoWssClientConfig) {
+    if (!config.getToken && !config.getTicket) {
+      throw new Error(
+        '[AppoWssClient] config must provide getToken or getTicket',
+      );
+    }
+    if (config.getToken && config.getTicket) {
+      throw new Error(
+        '[AppoWssClient] config cannot provide both getToken and getTicket',
+      );
+    }
     this.config = config;
     this.protocolVersion = config.protocolVersion ?? 'appo-v1';
     this.pingIntervalMs =
@@ -105,17 +115,37 @@ export class AppoWssClient {
 
     this.setStatus('authenticating');
     try {
-      const token = await this.config.getToken();
-      const authMsg = buildAuthMessage({
-        token,
-        sharedId: this.config.sharedId,
-        clientType: this.config.clientType,
-        clientVersion: this.config.clientVersion,
-      });
-      this.rws.send(JSON.stringify(authMsg));
+      if (this.config.getTicket) {
+        const ticket = await this.config.getTicket();
+        const authMsg = buildTicketAuthMessage({
+          ticket,
+          sharedId: this.config.sharedId,
+          clientType: this.config.clientType,
+          retoolUserId: this.config.retoolUserId,
+          clientVersion: this.config.clientVersion,
+        });
+        this.rws.send(JSON.stringify(authMsg));
+      } else {
+        const token = await this.config.getToken!();
+        const authMsg = buildAuthMessage({
+          token,
+          sharedId: this.config.sharedId,
+          clientType: this.config.clientType,
+          clientVersion: this.config.clientVersion,
+        });
+        this.rws.send(JSON.stringify(authMsg));
+      }
     } catch (err) {
-      const reason = err instanceof Error ? err.message : 'getToken_failed';
-      this.fail('getToken_failed', AUTH_REJECTED_CLOSE_CODE, reason);
+      const reason =
+        err instanceof Error
+          ? err.message
+          : this.config.getTicket
+            ? 'getTicket_failed'
+            : 'getToken_failed';
+      const failReason = this.config.getTicket
+        ? 'getTicket_failed'
+        : 'getToken_failed';
+      this.fail(failReason, AUTH_REJECTED_CLOSE_CODE, reason);
     }
   }
 

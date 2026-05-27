@@ -42,7 +42,30 @@ export interface AppoWssClientConfig {
 
   clientType: WssClientType;
 
-  getToken: () => Promise<string>;
+  /**
+   * Returns a fresh Google OAuth2 access token. Used by the chrome extension
+   * (and any other client that can acquire a Google token directly). Exactly
+   * one of `getToken` or `getTicket` is required.
+   */
+  getToken?: () => Promise<string>;
+
+  /**
+   * Returns a fresh channel ticket (HS256 JWT minted by the WSS via
+   * `POST /channel-ticket`). Used by the Retool app, which cannot obtain a
+   * Google token from inside Retool's nested iframe sandbox. Required for
+   * `clientType: 'retool'` when authenticating without a Google token.
+   * Exactly one of `getToken` or `getTicket` is required.
+   */
+  getTicket?: () => Promise<string>;
+
+  /**
+   * The Retool user ID currently signed in to the Retool app. Sent alongside
+   * the ticket so the WSS can cross-check (via the Retool API) that the user
+   * the ticket was minted for is the same user signed in on the Retool side.
+   * Only meaningful when `getTicket` is set. Typically:
+   *   `String(retoolContext.currentUser.id)`
+   */
+  retoolUserId?: string;
 
   onMessage?: (msg: WssMessage) => void;
 
